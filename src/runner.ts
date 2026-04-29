@@ -106,7 +106,13 @@ function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
   if (threadId) {
     const current = threadQueues.get(threadId) ?? Promise.resolve();
     const task = current.then(fn, fn);
-    threadQueues.set(threadId, task.catch(() => {}));
+    const queued = task.catch(() => {});
+    threadQueues.set(threadId, queued);
+    // Evict the entry once this task settles and no follow-up has replaced it,
+    // preventing unbounded growth when Slack threads accumulate over time.
+    queued.finally(() => {
+      if (threadQueues.get(threadId) === queued) threadQueues.delete(threadId);
+    });
     return task;
   }
   const task = globalQueue.then(fn, fn);
@@ -622,11 +628,12 @@ async function streamClaude(
   name: string,
   prompt: string,
   onChunk: (text: string) => void,
-  onUnblock: () => void
+  onUnblock: () => void,
+  threadId?: string,
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getSession();
+  const existing = threadId ? await getThreadSession(threadId) : await getSession();
   const { security, model, api } = getSettings();
   const securityArgs = buildSecurityArgs(security);
 
@@ -698,8 +705,13 @@ async function streamClaude(
           // Capture session ID for new sessions
           const sid = event.session_id as string | undefined;
           if (sid && !existing) {
-            await createSession(sid);
-            console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
+            if (threadId) {
+              await createThreadSession(threadId, sid);
+              console.log(`[${new Date().toLocaleTimeString()}] Thread session created (stream-json): ${sid} (thread ${threadId.slice(0, 8)})`);
+            } else {
+              await createSession(sid);
+              console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
+            }
           }
         } else if (event.type === "assistant") {
           // Text and tool_use blocks from the assistant
@@ -743,9 +755,10 @@ export async function streamUserMessage(
   name: string,
   prompt: string,
   onChunk: (text: string) => void,
-  onUnblock: () => void
+  onUnblock: () => void,
+  threadId?: string,
 ): Promise<void> {
-  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock));
+  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock, threadId), threadId);
 }
 
 function prefixUserMessageWithClock(prompt: string): string {

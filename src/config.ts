@@ -77,6 +77,7 @@ const DEFAULT_SETTINGS: Settings = {
   },
   telegram: { token: "", allowedUserIds: [], listenChats: [] },
   discord: { token: "", allowedUserIds: [], listenChannels: [] },
+  slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
@@ -132,6 +133,7 @@ export interface Settings {
   heartbeat: HeartbeatConfig;
   telegram: TelegramConfig;
   discord: DiscordConfig;
+  slack: SlackConfig;
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
@@ -172,6 +174,13 @@ export interface SttConfig {
   baseUrl: string;
   /** Model name passed to the API (default: "Systran/faster-whisper-large-v3") */
   model: string;
+}
+
+export interface SlackConfig {
+  botToken: string;       // xoxb-... (used for all API calls)
+  appToken: string;       // xapp-1-... (used only for apps.connections.open)
+  allowedUserIds: string[];
+  listenChannels: string[];
 }
 
 let cached: Settings | null = null;
@@ -287,6 +296,12 @@ function parseSettings(
       listenChannels: Array.isArray(raw.discord?.listenChannels)
         ? raw.discord.listenChannels.map(String)
         : [],
+    },
+    slack: {
+      botToken: process.env.SLACK_BOT_TOKEN?.trim() || (typeof raw.slack?.botToken === "string" ? raw.slack.botToken.trim() : ""),
+      appToken: process.env.SLACK_APP_TOKEN?.trim() || (typeof raw.slack?.appToken === "string" ? raw.slack.appToken.trim() : ""),
+      allowedUserIds: Array.isArray(raw.slack?.allowedUserIds) ? raw.slack.allowedUserIds.map(String) : [],
+      listenChannels: Array.isArray(raw.slack?.listenChannels) ? raw.slack.listenChannels.map(String) : [],
     },
     security: {
       level,
