@@ -37,11 +37,12 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
    - **Heartbeat configured** = `heartbeat.enabled` is `true` AND `heartbeat.prompt` is non-empty
    - **Telegram configured** = `telegram.token` is non-empty
    - **Discord configured** = `discord.token` is non-empty
+   - **Slack configured** = `slack.botToken` is non-empty AND `slack.appToken` is non-empty
    - **Security configured** = `security.level` exists and is not `"moderate"` (the default), OR `security.allowedTools`/`security.disallowedTools` are non-empty
 
 4. **Interactive setup — smart mode** (BEFORE launching the daemon):
 
-   **If ALL three sections are already configured**, show a summary of the current config and ask ONE question:
+   **If ALL four sections are already configured**, show a summary of the current config and ask ONE question:
 
    Use AskUserQuestion:
    - "Your settings are already configured. Want to change anything?" (header: "Settings", options: "Keep current settings", "Reconfigure")
@@ -51,16 +52,17 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
 
    **If SOME sections are configured and others are not**, show the already-configured sections as a summary, then only ask about the unconfigured sections in step 5.
 
-   **If NOTHING is configured** (fresh install), ask about all three sections in step 5.
+   **If NOTHING is configured** (fresh install), ask about all four sections in step 5.
 
 5. **Ask setup questions**:
 
-   Use **AskUserQuestion** to ask all unconfigured sections at once (up to 3 questions in one call):
+   Use **AskUserQuestion** to ask all unconfigured sections at once (up to 4 questions in one call):
 
    - **Model** (always ask if `model` is empty/unset): "Which Claude model should ClaudeClaw use?" (header: "Model", options: "opus (default)", "sonnet", "haiku", "glm")
    - **If heartbeat is NOT configured**: "Enable heartbeat? Example: I can remind you to drink water every 30 minutes, or you can fully customize what runs." (header: "Heartbeat", options: "Yes" / "No")
    - **If Telegram is NOT configured**: "Configure Telegram? Recommended if you want it 24/7 live." (header: "Telegram", options: "Yes" / "No")
    - **If Discord is NOT configured**: "Configure Discord? Connect your bot to Discord servers." (header: "Discord", options: "Yes" / "No")
+   - **If Slack is NOT configured**: "Configure Slack? Connect your bot to a Slack workspace via Socket Mode (no public webhook)." (header: "Slack", options: "Yes" / "No")
    - **If security is NOT configured**: "What security level for Claude?" (header: "Security", options:
      - "Moderate (Recommended)" (description: "Full access scoped to project directory")
      - "Locked" (description: "Read-only — can only search and read files, no edits, bash, or web")
@@ -98,6 +100,23 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Listen channel IDs (optional — hint: right-click a channel in Discord with Developer Mode enabled → Copy Channel ID). Channels where the bot responds to all messages without requiring an @mention.
      - Set `discord.listenChannels` (as array of strings) accordingly.
      - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments. `discord.allowedUserIds` is an allowlist that applies to messages, slash commands, and button interactions.
+
+   - **If yes to Slack**: Do NOT use AskUserQuestion for Slack fields. First, walk the user through creating a Slack app:
+     1. Go to https://api.slack.com/apps → **Create New App** → **From scratch**. Name it and pick a workspace.
+     2. **Socket Mode** → toggle on. Generate an **App-Level Token** with scope `connections:write`. Copy the `xapp-1-...` value — this is the **app token**.
+     3. **OAuth & Permissions** → add Bot Token Scopes: `app_mentions:read`, `assistant:write`, `channels:history`, `chat:write`, `chat:write.public`, `groups:history`, `im:history`, `im:read`, `im:write`, `mpim:history`, `users:read`.
+     4. **App Home** → enable the **Messages Tab** and check "Allow users to send Slash commands and messages from the messages tab".
+     5. **Agents & AI Apps** (optional, enables sidebar AI panel with streaming responses) → enable.
+     6. **Event Subscriptions** → toggle on, subscribe to bot events: `message.im`, `message.channels`, `message.groups`, `message.mpim`, `app_mention`, `app_home_opened`. Add `assistant_thread_started` and `assistant_thread_context_changed` only if Agents & AI Apps was enabled in step 5.
+     7. **Install App** to your workspace → copy the **Bot User OAuth Token** (`xoxb-...`) — this is the **bot token**.
+
+     Then ask in normal free-form text for these values (all optional, user can skip):
+     - Slack bot token (`xoxb-...`)
+     - Slack app token (`xapp-1-...`)
+     - Allowed Slack user IDs (hint: in Slack, click your profile → More → Copy member ID. Format `U01ABC2DEF3`. Leave empty to allow all workspace members.)
+     - Listen channel IDs (optional — hint: in Slack, click a channel name → bottom of the panel shows the channel ID. Format `C01ABC2DEF3`. Channels where the bot responds to all messages without requiring an @mention.)
+     - Set `slack.botToken`, `slack.appToken`, `slack.allowedUserIds` (as array of strings), and `slack.listenChannels` (as array of strings) accordingly.
+     - Note: Slack bot connects via Socket Mode (WebSocket) in-process with the daemon — no public webhook required. Supports DMs, channel @mentions, configurable listen channels, and an "AI App" assistant surface (sidebar) with streaming responses when Agents & AI Apps is enabled. `slack.allowedUserIds` is an allowlist; empty means all workspace members can interact.
 
    - **Security level mapping** — set `security.level` in settings based on their choice:
      - "Locked" → `"locked"`
@@ -153,6 +172,11 @@ Go to your bot, send `/start`, and start talking.
 DM your bot directly — no server invite needed: `https://discord.com/users/<DISCORD_BOT_ID>`
 Or mention it in any server it's in. Use `/start` and `/reset` slash commands.
 To get `<DISCORD_BOT_ID>`: read the daemon log for the bot's user ID (shown in the "Ready as <name> (<ID>)" line).
+
+**To start chatting on Slack**
+DM the bot directly in your workspace, or @mention it in any channel it's invited to.
+If Agents & AI Apps is enabled, open the bot from the AI sidebar to get streaming responses.
+The bot's **Home** tab shows live daemon status (jobs, heartbeat, connected adapters).
 
 **To talk to your agent directly on Claude Code**
 `cd <WORKING_DIR> && claude --resume <SESSION_ID>`
@@ -210,6 +234,12 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
     "allowedUserIds": ["123456789012345678"],
     "listenChannels": ["987654321098765432"]
   },
+  "slack": {
+    "botToken": "xoxb-...",
+    "appToken": "xapp-1-...",
+    "allowedUserIds": ["U01ABC2DEF3"],
+    "listenChannels": ["C01ABC2DEF3"]
+  },
   "security": {
     "level": "moderate",
     "allowedTools": [],
@@ -234,6 +264,10 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 - `discord.token` — Discord bot token from the Developer Portal
 - `discord.allowedUserIds` — array of string Discord user IDs (snowflakes) allowed to interact
 - `discord.listenChannels` — array of string channel IDs where the bot responds to all messages without requiring an @mention
+- `slack.botToken` — Slack Bot User OAuth Token (`xoxb-...`) used for all API calls
+- `slack.appToken` — Slack App-Level Token (`xapp-1-...`) used to open the Socket Mode connection
+- `slack.allowedUserIds` — array of string Slack user IDs (e.g. `U01ABC2DEF3`) allowed to interact; empty means all workspace members
+- `slack.listenChannels` — array of string channel IDs (e.g. `C01ABC2DEF3`) where the bot responds to all messages without requiring an @mention
 - `security.level` — one of: `locked`, `strict`, `moderate`, `unrestricted`
 - `security.allowedTools` — extra tools to allow on top of the level (e.g. `["Bash(git:*)"]`)
 - `security.disallowedTools` — tools to block on top of the level

@@ -15,6 +15,7 @@ Display this help information to the user:
 - `/heartbeat:jobs` — Create, list, edit, or delete cron jobs
 - `/heartbeat:logs` — Show recent execution logs (accepts count or job name filter)
 - `/heartbeat:telegram` — Show Telegram bot status and sessions (use `clear` to reset sessions)
+- `/heartbeat:slack` — Show Slack bot status and sessions (use `clear` to reset sessions)
 - `/heartbeat:help` — Show this help message
 
 **Start command options (CLI):**
