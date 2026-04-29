@@ -168,22 +168,43 @@ async function sendMessage(
   text: string,
   threadTs?: string,
   useMarkdownBlock = false,
+  updateTs?: string,
 ): Promise<void> {
   const normalized = text.replace(/\[react:[^\]\r\n]+\]/gi, "").trim();
-  if (!normalized) return;
+  if (!normalized) {
+    if (updateTs) {
+      await slackApi(botToken, "chat.update", {
+        channel: channelId,
+        ts: updateTs,
+        text: "_(empty response)_",
+      }).catch(() => {});
+    }
+    return;
+  }
   const MAX_LEN = 3000;
   // Chunk by normalized length so mrkdwn and markdown blocks stay in sync
   for (let i = 0; i < normalized.length; i += MAX_LEN) {
     const chunk = normalized.slice(i, i + MAX_LEN);
     const mrkdwn = markdownToSlackMrkdwn(chunk);
-    await slackApi(botToken, "chat.postMessage", {
-      channel: channelId,
-      text: mrkdwn,
-      // markdown block (AI Apps only) renders full CommonMark; mrkdwn is the fallback.
-      // Only used when the caller knows the channel is on the assistant surface.
-      ...(useMarkdownBlock ? { blocks: [{ type: "markdown", text: chunk }] } : {}),
-      ...(threadTs ? { thread_ts: threadTs } : {}),
-    });
+    // markdown block (AI Apps only) renders full CommonMark; mrkdwn is the fallback.
+    // Only used when the caller knows the channel is on the assistant surface.
+    const blocks = useMarkdownBlock ? { blocks: [{ type: "markdown", text: chunk }] } : {};
+    if (i === 0 && updateTs) {
+      // Replace the "thinking" placeholder with the first chunk
+      await slackApi(botToken, "chat.update", {
+        channel: channelId,
+        ts: updateTs,
+        text: mrkdwn,
+        ...blocks,
+      });
+    } else {
+      await slackApi(botToken, "chat.postMessage", {
+        channel: channelId,
+        text: mrkdwn,
+        ...blocks,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      });
+    }
   }
 }
 
@@ -200,13 +221,25 @@ export async function sendMessageToUser(
   await sendMessage(botToken, result.channel.id, text);
 }
 
-async function sendTyping(botToken: string, channelId: string, threadTs?: string): Promise<void> {
-  // conversations.setTyping is not a standard Slack Web API method;
-  // this is best-effort and may silently fail, which is acceptable.
-  await slackApi(botToken, "conversations.setTyping", {
-    channel: channelId,
-    ...(threadTs ? { thread_ts: threadTs } : {}),
-  }).catch(() => {});
+async function postPlaceholderMessage(
+  botToken: string,
+  channelId: string,
+  threadTs: string | undefined,
+): Promise<string | null> {
+  // Slack has no public API for triggering the native typing indicator from a bot
+  // in regular DMs/channels — only assistant.threads.setStatus works (and only on the
+  // AI Apps surface). The placeholder-update pattern is the alternative: post a
+  // "thinking" message immediately, then chat.update it once Claude responds.
+  try {
+    const res = await slackApi<{ ts: string }>(botToken, "chat.postMessage", {
+      channel: channelId,
+      text: "_Thinking…_",
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    });
+    return res.ts;
+  } catch {
+    return null;
+  }
 }
 
 // --- Assistant thread surface ---
@@ -482,9 +515,11 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
   const sessionThreadId = replyThreadTs ? `slack:${channelId}:${replyThreadTs}` : undefined;
 
   // Status indicator setup.
-  // For assistant surface threads: assistant.threads.setStatus persists until cleared.
-  // For regular messages: conversations.setTyping expires every ~3s and must be refreshed.
-  let typingInterval: ReturnType<typeof setInterval> | null = null;
+  // - Assistant surface threads: streamSlackMessage posts its own streaming message,
+  //   and assistant.threads.setStatus shows a "thinking" indicator under the bot avatar.
+  // - Regular DMs/channels: post a "_Thinking…_" placeholder that we chat.update with
+  //   the final response (Slack has no bot-typing API for this surface).
+  let placeholderTs: string | null = null;
 
   if (isAssistantThread && replyThreadTs) {
     await slackApi(botToken, "assistant.threads.setStatus", {
@@ -492,9 +527,8 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
       thread_ts: replyThreadTs,
       status: "is thinking...",
     }).catch(() => {});
-  } else {
-    await sendTyping(botToken, channelId, replyThreadTs);
-    typingInterval = setInterval(() => sendTyping(botToken, channelId, replyThreadTs), 2000);
+  } else if (config.thinkingPlaceholder) {
+    placeholderTs = await postPlaceholderMessage(botToken, channelId, replyThreadTs);
   }
 
   try {
@@ -515,23 +549,48 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
           channelId,
           `Something went wrong (exit ${result.exitCode}). Check the daemon logs for details.`,
           replyThreadTs,
+          false,
+          placeholderTs ?? undefined,
         );
       } else {
-        await sendMessage(botToken, channelId, result.stdout || "(empty response)", replyThreadTs, isAssistantThread);
+        await sendMessage(
+          botToken,
+          channelId,
+          result.stdout || "(empty response)",
+          replyThreadTs,
+          isAssistantThread,
+          placeholderTs ?? undefined,
+        );
       }
+      placeholderTs = null;
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[Slack] Error for ${label}: ${errMsg}`);
-    await sendMessage(botToken, channelId, "An internal error occurred. Check the daemon logs.", replyThreadTs);
+    await sendMessage(
+      botToken,
+      channelId,
+      "An internal error occurred. Check the daemon logs.",
+      replyThreadTs,
+      false,
+      placeholderTs ?? undefined,
+    );
+    placeholderTs = null;
   } finally {
-    if (typingInterval) clearInterval(typingInterval);
     // Clear assistant thread status — it persists until explicitly cleared
     if (isAssistantThread && replyThreadTs) {
       await slackApi(botToken, "assistant.threads.setStatus", {
         channel_id: channelId,
         thread_ts: replyThreadTs,
         status: "",
+      }).catch(() => {});
+    }
+    // Safety net: if the placeholder was never consumed (e.g., delivery threw before
+    // any sendMessage call), delete it so the channel doesn't show a stuck "Thinking…".
+    if (placeholderTs) {
+      await slackApi(botToken, "chat.delete", {
+        channel: channelId,
+        ts: placeholderTs,
       }).catch(() => {});
     }
   }
