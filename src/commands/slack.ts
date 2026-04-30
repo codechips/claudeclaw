@@ -1,6 +1,9 @@
-import { join } from "path";
+import { extname, join } from "path";
+import { mkdir } from "fs/promises";
 import { ensureProjectClaudeMd, runUserMessage, streamUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
+import { transcribeAudioToText } from "../whisper";
+import { extractReactionDirective } from "../reactions";
 import type { StateData } from "../statusline";
 
 // --- Slack API constants ---
@@ -8,6 +11,13 @@ import type { StateData } from "../statusline";
 const SLACK_API = "https://slack.com/api";
 
 // --- Type interfaces ---
+
+interface SlackFile {
+  id: string;
+  name?: string;
+  mimetype?: string;
+  url_private?: string;
+}
 
 interface SlackEvent {
   type: string;
@@ -19,6 +29,9 @@ interface SlackEvent {
   thread_ts?: string;
   bot_id?: string;
   subtype?: string;
+  files?: SlackFile[];
+  reaction?: string;
+  item?: { type: string; channel?: string; ts?: string };
 }
 
 interface SlackSocketPayload {
@@ -60,8 +73,6 @@ let botUsername: string | null = null;
 // Assistant surface state — composite key "channelId:threadTs"
 const assistantThreads = new Set<string>();
 const assistantContexts = new Map<string, string>(); // key → context channel_id
-// True once we receive assistant_thread_started; used to gate markdown blocks
-let aiAppEnabled = false;
 
 // --- Debug ---
 
@@ -160,6 +171,102 @@ function markdownToSlackMrkdwn(text: string): string {
   return text;
 }
 
+// --- Attachment handling ---
+
+function isImageFile(file: SlackFile): boolean {
+  return Boolean(file.mimetype?.startsWith("image/"));
+}
+
+function isAudioFile(file: SlackFile): boolean {
+  return Boolean(file.mimetype?.startsWith("audio/"));
+}
+
+function isTextFile(file: SlackFile): boolean {
+  if (!file.mimetype) return false;
+  if (isImageFile(file) || isAudioFile(file)) return false;
+  if (file.mimetype.startsWith("text/")) return true;
+  // Common doc MIME types Slack reports
+  return new Set([
+    "application/pdf",
+    "application/json",
+    "application/xml",
+    "application/x-yaml",
+    "application/yaml",
+  ]).has(file.mimetype);
+}
+
+function extensionFromMimeType(mimeType?: string): string {
+  switch (mimeType) {
+    case "image/jpeg": return ".jpg";
+    case "image/png": return ".png";
+    case "image/webp": return ".webp";
+    case "image/gif": return ".gif";
+    case "image/bmp": return ".bmp";
+    case "audio/mpeg": return ".mp3";
+    case "audio/mp4":
+    case "audio/x-m4a": return ".m4a";
+    case "audio/ogg": return ".ogg";
+    case "audio/wav":
+    case "audio/x-wav": return ".wav";
+    case "audio/webm": return ".webm";
+    default: return "";
+  }
+}
+
+async function downloadSlackFile(
+  botToken: string,
+  file: SlackFile,
+  channelId: string,
+  ts: string,
+): Promise<string | null> {
+  if (!file.url_private) return null;
+
+  const response = await fetch(file.url_private, {
+    headers: { Authorization: `Bearer ${botToken}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Slack file download failed: ${response.status} ${response.statusText}`);
+  }
+
+  const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "slack");
+  await mkdir(dir, { recursive: true });
+
+  const nameExt = extname(file.name ?? "");
+  const mimeExt = extensionFromMimeType(file.mimetype);
+  const ext = nameExt || mimeExt || ".bin";
+  const filename = `${channelId}-${ts.replaceAll(".", "")}-${file.id}${ext}`;
+  const localPath = join(dir, filename);
+
+  await Bun.write(localPath, response);
+  debugLog(`File downloaded: ${localPath} (${file.mimetype ?? "?"})`);
+  return localPath;
+}
+
+// Slack emoji codes use leading/trailing colons (`:thumbsup:`); strip before reactions.add.
+function normalizeSlackEmoji(raw: string | null): string | null {
+  if (!raw) return null;
+  const stripped = raw.replace(/:/g, "").trim();
+  return stripped || null;
+}
+
+async function addReaction(
+  botToken: string,
+  channel: string,
+  ts: string,
+  name: string,
+): Promise<void> {
+  await slackApi(botToken, "reactions.add", { channel, timestamp: ts, name }).catch((err) =>
+    debugLog(`reactions.add failed: ${err}`),
+  );
+}
+
+function isSlackDmChannelId(channelId: string): boolean {
+  return channelId.startsWith("D");
+}
+
+// Reactions Claude shouldn't be woken up for — pure acknowledgments.
+const SILENT_REACTIONS = new Set(["thumbsup", "+1", "eyes", "white_check_mark", "heavy_check_mark", "ok_hand"]);
+
 // --- Message sending ---
 
 async function sendMessage(
@@ -245,7 +352,6 @@ async function postPlaceholderMessage(
 // --- Assistant thread surface ---
 
 function handleAssistantThreadStarted(event: SlackAssistantThreadEvent): void {
-  aiAppEnabled = true;
   const key = `${event.channel_id}:${event.thread_ts}`;
   // Evict the oldest entry when the ceiling is reached so the collections
   // don't grow without bound on long-running daemons with active workspaces.
@@ -325,14 +431,14 @@ async function handleAppHomeOpened(botToken: string, userId: string): Promise<vo
 
 // --- Streaming response ---
 
-// Returns true if the message was delivered via streaming, false if streaming is unavailable.
+// Returns { delivered, reactionEmoji } — delivered=false means streaming unavailable (caller falls back).
 async function streamSlackMessage(
   botToken: string,
   channelId: string,
   prompt: string,
   replyThreadTs: string | undefined,
   sessionThreadId: string | undefined,
-): Promise<boolean> {
+): Promise<{ delivered: boolean; reactionEmoji: string | null }> {
   let streamChannel: string;
   let streamMessageTs: string;
   try {
@@ -348,7 +454,7 @@ async function streamSlackMessage(
     streamMessageTs = res.message_ts;
   } catch {
     // Streaming unavailable (feature not enabled, wrong scope, etc.) — caller falls back
-    return false;
+    return { delivered: false, reactionEmoji: null };
   }
 
   // Accumulate chunks and flush every FLUSH_INTERVAL_MS or FLUSH_MIN_CHARS, whichever first,
@@ -398,7 +504,8 @@ async function streamSlackMessage(
 
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
 
-    const normalized = fullText.replace(/\[react:[^\]\r\n]+\]/gi, "").trim();
+    const { cleanedText: normalized, reactionEmoji: rawEmoji } = extractReactionDirective(fullText);
+    const reactionEmoji = normalizeSlackEmoji(rawEmoji);
     const finalMrkdwn = markdownToSlackMrkdwn(normalized);
     await slackApi(botToken, "chat.stopStream", {
       channel: streamChannel,
@@ -408,7 +515,7 @@ async function streamSlackMessage(
         blocks: [{ type: "markdown", text: normalized }],
       },
     });
-    return true;
+    return { delivered: true, reactionEmoji };
   } catch (err) {
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     await slackApi(botToken, "chat.stopStream", {
@@ -454,10 +561,10 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
   const text = event.text ?? "";
   const ts = event.ts;
   const threadTs = event.thread_ts;
-  const isDM = event.channel_type === "im";
 
   if (!channelId || !userId || !ts) return;
-  if (!text.trim()) return;
+  const isDM = isSlackDmChannelId(channelId);
+  if (!text.trim() && !event.files?.length) return;
 
   // Check if this message arrived via the assistant surface (sidebar AI panel).
   // Assistant surface threads are DMs with a thread_ts set by assistant_thread_started.
@@ -493,7 +600,15 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
     cleanText = cleanText.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
   }
 
-  if (!cleanText.trim()) return;
+  const files = event.files ?? [];
+  const imageFile = files.find(isImageFile) ?? null;
+  const voiceFile = files.find(isAudioFile) ?? null;
+  const textFile = files.find(isTextFile) ?? null;
+  const hasImage = Boolean(imageFile);
+  const hasVoice = Boolean(voiceFile);
+  const hasText = Boolean(textFile);
+
+  if (!cleanText.trim() && !hasImage && !hasVoice && !hasText) return;
 
   // Inject assistant surface context (channel the user had open when starting the thread)
   const contextChannelId = assistantContexts.get(threadKey);
@@ -502,7 +617,9 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
   }
 
   const label = userId;
-  console.log(`[${new Date().toLocaleTimeString()}] Slack ${label}: message received (${cleanText.length} chars)`);
+  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : "", hasText ? "text" : ""].filter(Boolean);
+  const mediaSuffix = mediaParts.length > 0 ? ` (+${mediaParts.join(", ")})` : "";
+  console.log(`[${new Date().toLocaleTimeString()}] Slack ${label}: message received (${cleanText.length} chars${mediaSuffix})`);
 
   // Determine reply thread_ts:
   // - Regular DM: no threading (flat conversation)
@@ -532,12 +649,77 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
   }
 
   try {
-    const prompt = `[Slack from ${label}]\nMessage: ${cleanText}`;
+    let imagePath: string | null = null;
+    let voicePath: string | null = null;
+    let voiceTranscript: string | null = null;
+    let textPath: string | null = null;
+    let textOriginalName: string | null = null;
 
-    // Try streaming for assistant surface threads; fall back to regular for all other cases.
+    if (imageFile) {
+      try {
+        imagePath = await downloadSlackFile(botToken, imageFile, channelId, ts);
+      } catch (err) {
+        console.error(`[Slack] Failed to download image for ${label}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    if (voiceFile) {
+      try {
+        voicePath = await downloadSlackFile(botToken, voiceFile, channelId, ts);
+      } catch (err) {
+        console.error(`[Slack] Failed to download voice for ${label}: ${err instanceof Error ? err.message : err}`);
+      }
+      if (voicePath) {
+        try {
+          voiceTranscript = await transcribeAudioToText(voicePath, {
+            debug: slackDebug,
+            log: (m) => debugLog(m),
+          });
+        } catch (err) {
+          console.error(`[Slack] Failed to transcribe voice for ${label}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    }
+    if (textFile) {
+      try {
+        textPath = await downloadSlackFile(botToken, textFile, channelId, ts);
+        textOriginalName = textFile.name ?? null;
+      } catch (err) {
+        console.error(`[Slack] Failed to download document for ${label}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    const promptParts = [`[Slack from ${label}]`];
+    if (cleanText.trim()) {
+      promptParts.push(`Message: ${cleanText}`);
+    }
+    if (imagePath) {
+      promptParts.push(`Image path: ${imagePath}`);
+      promptParts.push("The user attached an image. Inspect this image file directly before answering.");
+    } else if (hasImage) {
+      promptParts.push("The user attached an image, but downloading it failed. Respond and ask them to resend.");
+    }
+    if (voiceTranscript) {
+      promptParts.push(`Voice transcript: ${voiceTranscript}`);
+      promptParts.push("The user attached voice audio. Use the transcript as their spoken message.");
+    } else if (hasVoice) {
+      promptParts.push("The user attached voice audio, but it could not be transcribed. Respond and ask them to resend a clearer clip.");
+    }
+    if (textPath) {
+      promptParts.push(`Document path: ${textPath}`);
+      if (textOriginalName) promptParts.push(`Original filename: ${textOriginalName}`);
+      promptParts.push("The user attached a document. Read and process this file directly.");
+    } else if (hasText) {
+      promptParts.push("The user attached a document, but downloading it failed. Respond and ask them to resend.");
+    }
+    const prompt = promptParts.join("\n");
+
     let delivered = false;
     if (isAssistantThread) {
-      delivered = await streamSlackMessage(botToken, channelId, prompt, replyThreadTs, sessionThreadId);
+      const streamResult = await streamSlackMessage(botToken, channelId, prompt, replyThreadTs, sessionThreadId);
+      delivered = streamResult.delivered;
+      if (streamResult.delivered && streamResult.reactionEmoji) {
+        await addReaction(botToken, channelId, ts, streamResult.reactionEmoji);
+      }
     }
 
     if (!delivered) {
@@ -553,10 +735,18 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
           placeholderTs ?? undefined,
         );
       } else {
+        const { cleanedText, reactionEmoji: rawEmoji } = extractReactionDirective(result.stdout || "(empty response)");
+        const reactionEmoji = normalizeSlackEmoji(rawEmoji);
+        const responseText = cleanedText || "(empty response)";
+
+        if (reactionEmoji) {
+          await addReaction(botToken, channelId, ts, reactionEmoji);
+        }
+
         await sendMessage(
           botToken,
           channelId,
-          result.stdout || "(empty response)",
+          responseText,
           replyThreadTs,
           isAssistantThread,
           placeholderTs ?? undefined,
@@ -593,6 +783,41 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
         ts: placeholderTs,
       }).catch(() => {});
     }
+  }
+}
+
+async function handleReaction(botToken: string, event: SlackEvent): Promise<void> {
+  const config = getSettings().slack;
+  const userId = event.user;
+  const reaction = event.reaction;
+  const channelId = event.item?.channel;
+  const itemTs = event.item?.ts;
+
+  if (!userId || !reaction || !channelId || !itemTs) return;
+  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) return;
+
+  const isDM = isSlackDmChannelId(channelId);
+  const isListenChannel = config.listenChannels.includes(channelId);
+  if (!isDM && !isListenChannel) return;
+  if (SILENT_REACTIONS.has(reaction)) return;
+
+  console.log(`[${new Date().toLocaleTimeString()}] Slack ${userId}: reaction :${reaction}:`);
+
+  const sessionThreadId = `slack:${channelId}:${itemTs}`;
+  const prompt = `[Slack reaction from ${userId}]\nReaction: :${reaction}: on your message`;
+
+  const result = await runUserMessage("slack", prompt, sessionThreadId);
+  if (result.exitCode !== 0 || !result.stdout) return;
+
+  const { cleanedText, reactionEmoji: rawEmoji } = extractReactionDirective(result.stdout);
+  const reactionEmoji = normalizeSlackEmoji(rawEmoji);
+
+  if (reactionEmoji) {
+    await addReaction(botToken, channelId, itemTs, reactionEmoji);
+  }
+
+  if (cleanedText.trim()) {
+    await sendMessage(botToken, channelId, cleanedText);
   }
 }
 
@@ -677,6 +902,10 @@ function connectSocketMode(botToken: string, appToken: string): void {
           handleMessage(botToken, slackEvent).catch((err) =>
             console.error(`[Slack] Unhandled message error: ${err}`),
           );
+        } else if (slackEvent.type === "reaction_added") {
+          handleReaction(botToken, slackEvent).catch((err) =>
+            console.error(`[Slack] Unhandled reaction error: ${err}`),
+          );
         } else if (slackEvent.type === "assistant_thread_started") {
           handleAssistantThreadStarted(slackEvent);
         } else if (slackEvent.type === "assistant_thread_context_changed") {
@@ -724,7 +953,6 @@ export function stopGateway(): void {
   botUsername = null;
   assistantThreads.clear();
   assistantContexts.clear();
-  aiAppEnabled = false;
 }
 
 process.on("SIGTERM", () => {
