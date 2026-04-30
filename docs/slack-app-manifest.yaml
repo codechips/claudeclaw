@@ -43,11 +43,15 @@ oauth_config:
       - channels:history
       - chat:write
       - chat:write.public
+      - commands
+      - files:read
       - groups:history
       - im:history
       - im:read
       - im:write
       - mpim:history
+      - reactions:read
+      - reactions:write
       - users:read
 settings:
   event_subscriptions:
@@ -58,6 +62,7 @@ settings:
       - message.groups
       - message.im
       - message.mpim
+      - reaction_added
       # Add only if you also enable assistant_view above:
       # - assistant_thread_context_changed
       # - assistant_thread_started
