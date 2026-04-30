@@ -16,7 +16,7 @@ Show the Slack bot integration status. Check the following:
 
 4. **Running**: Check if the daemon is running by reading `.claude/claudeclaw/daemon.pid`. The Slack bot runs in-process with the daemon when `slack.botToken` and `slack.appToken` are both configured.
 
-5. **Slash commands** (declared in `docs/slack-app-manifest.yaml`):
+5. **Slash commands** (declared in `docs/slack-app-manifest.json`):
    - `/start` — show welcome message
    - `/reset` — reset the global session (next message starts fresh)
    - `/compact` — compact the current session to free context

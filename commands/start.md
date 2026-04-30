@@ -102,8 +102,8 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments. `discord.allowedUserIds` is an allowlist that applies to messages, slash commands, and button interactions.
 
    - **If yes to Slack**: Do NOT use AskUserQuestion for Slack fields. First, walk the user through creating a Slack app via app manifest (one paste replaces clicking through OAuth, Event Subscriptions, App Home, and Socket Mode):
-     1. Go to https://api.slack.com/apps → **Create New App** → **From a manifest** → pick the target workspace → choose **YAML**.
-     2. Open `${CLAUDE_PLUGIN_ROOT}/docs/slack-app-manifest.yaml`, copy its contents into the manifest box, click **Next** → **Create**. (The manifest leaves Agents & AI Apps disabled by default — see the comment block in the file if you want to opt in.)
+     1. Go to https://api.slack.com/apps → **Create New App** → **From a manifest** → pick the target workspace → choose **JSON**.
+     2. Open `${CLAUDE_PLUGIN_ROOT}/docs/slack-app-manifest.json`, copy its contents into the manifest box, click **Next** → **Create**. The manifest leaves Agents & AI Apps disabled by default because enabling it splits DMs across Chat/History tabs; to opt into the streaming sidebar UI, edit the manifest after creation to add an `assistant_view` feature block plus the `assistant_thread_started` and `assistant_thread_context_changed` bot events, then reinstall.
      3. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes** → add scope `connections:write` → **Generate**. Copy the `xapp-1-...` value — this is the **app token**.
      4. **Install App** → **Install to Workspace** → **Allow**. Copy the **Bot User OAuth Token** (`xoxb-...`) — this is the **bot token**.
 
