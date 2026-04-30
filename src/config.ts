@@ -77,7 +77,7 @@ const DEFAULT_SETTINGS: Settings = {
   },
   telegram: { token: "", allowedUserIds: [], listenChats: [] },
   discord: { token: "", allowedUserIds: [], listenChannels: [] },
-  slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [], thinkingPlaceholder: true },
+  slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [], homeChannel: "", thinkingPlaceholder: true },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
@@ -181,6 +181,9 @@ export interface SlackConfig {
   appToken: string;       // xapp-1-... (used only for apps.connections.open)
   allowedUserIds: string[];
   listenChannels: string[];
+  // When set, cron/heartbeat output is posted to this channel instead of DMing
+  // each allowedUserId. Bot must be a member of the channel.
+  homeChannel: string;
   thinkingPlaceholder: boolean; // post a "_Thinking…_" placeholder while Claude runs
 }
 
@@ -303,6 +306,7 @@ function parseSettings(
       appToken: process.env.SLACK_APP_TOKEN?.trim() || (typeof raw.slack?.appToken === "string" ? raw.slack.appToken.trim() : ""),
       allowedUserIds: Array.isArray(raw.slack?.allowedUserIds) ? raw.slack.allowedUserIds.map(String) : [],
       listenChannels: Array.isArray(raw.slack?.listenChannels) ? raw.slack.listenChannels.map(String) : [],
+      homeChannel: typeof raw.slack?.homeChannel === "string" ? raw.slack.homeChannel.trim() : "",
       thinkingPlaceholder: typeof raw.slack?.thinkingPlaceholder === "boolean" ? raw.slack.thinkingPlaceholder : true,
     },
     security: {

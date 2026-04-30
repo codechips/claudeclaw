@@ -10,6 +10,19 @@ features:
   bot_user:
     display_name: ClaudeClaw
     always_online: true
+  slash_commands:
+    - command: /start
+      description: Show welcome message and usage instructions
+      should_escape: false
+    - command: /reset
+      description: Reset the global session — next message starts fresh
+      should_escape: false
+    - command: /compact
+      description: Compact the current session to free context
+      should_escape: false
+    - command: /status
+      description: Show session info, model, and security level
+      should_escape: false
   # Agents & AI Apps (assistant_view) is intentionally omitted by default.
   # Enabling it routes DMs into the AI Assistant sidebar where each "New Chat"
   # splits the conversation into a separate thread (fragmented Chat / History

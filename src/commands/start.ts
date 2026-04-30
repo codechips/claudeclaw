@@ -423,6 +423,7 @@ export async function start(args: string[] = []) {
 
   // --- Slack ---
   let slackSendToUser: ((userId: string, text: string) => Promise<void>) | null = null;
+  let slackSendToChannel: ((channelId: string, text: string) => Promise<void>) | null = null;
   let slackBotToken = "";
   let slackAppToken = "";
 
@@ -430,11 +431,12 @@ export async function start(args: string[] = []) {
     const tokenKey = botToken + "|" + appToken;
     const currentKey = slackBotToken + "|" + slackAppToken;
     if (botToken && appToken && tokenKey !== currentKey) {
-      const { startGateway, sendMessageToUser, stopGateway } = await import("./slack");
+      const { startGateway, sendMessageToUser, sendMessage, stopGateway } = await import("./slack");
       if (slackBotToken) stopGateway();
       startGateway(debugFlag);
       slackStopGateway = stopGateway;
       slackSendToUser = (userId, text) => sendMessageToUser(botToken, userId, text);
+      slackSendToChannel = (channelId, text) => sendMessage(botToken, channelId, text);
       slackBotToken = botToken;
       slackAppToken = appToken;
       console.log(`[${ts()}] Slack: enabled`);
@@ -442,6 +444,7 @@ export async function start(args: string[] = []) {
       if (slackStopGateway) slackStopGateway();
       slackStopGateway = null;
       slackSendToUser = null;
+      slackSendToChannel = null;
       slackBotToken = "";
       slackAppToken = "";
       console.log(`[${ts()}] Slack: disabled`);
@@ -581,6 +584,11 @@ export async function start(args: string[] = []) {
   }
 
   function forwardToSlack(label: string, result: { exitCode: number; stdout: string; stderr: string }) {
+    const homeChannel = currentSettings.slack.homeChannel;
+    if (homeChannel && slackSendToChannel) {
+      forwardTo(label, result, slackSendToChannel, [homeChannel], "Slack");
+      return;
+    }
     forwardTo(label, result, slackSendToUser, currentSettings.slack.allowedUserIds, "Slack");
   }
 

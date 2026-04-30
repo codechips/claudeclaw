@@ -1,6 +1,7 @@
 import { extname, join } from "path";
 import { mkdir } from "fs/promises";
-import { ensureProjectClaudeMd, runUserMessage, streamUserMessage } from "../runner";
+import { compactCurrentSession, ensureProjectClaudeMd, runUserMessage, streamUserMessage } from "../runner";
+import { peekSession, resetSession } from "../sessions";
 import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
 import { extractReactionDirective } from "../reactions";
@@ -35,15 +36,27 @@ interface SlackEvent {
 }
 
 interface SlackSocketPayload {
-  type: string;         // "events_api", "disconnect", "hello"
+  type: string;         // "events_api", "slash_commands", "disconnect", "hello"
   envelope_id?: string;
   payload?: {
     type?: string;
     event?: SlackEvent;
+    // slash_commands payload fields
+    command?: string;
+    text?: string;
+    channel_id?: string;
+    user_id?: string;
     [key: string]: unknown;
   };
   reason?: string;      // for "disconnect" at top level
   num_connections?: number;
+}
+
+interface SlackSlashCommand {
+  command: string;
+  text: string;
+  channelId: string;
+  userId: string;
 }
 
 interface SlackAssistantThreadEvent {
@@ -786,6 +799,61 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
   }
 }
 
+async function handleSlashCommand(botToken: string, cmd: SlackSlashCommand): Promise<void> {
+  const config = getSettings().slack;
+  const { command, channelId, userId } = cmd;
+
+  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
+    await sendMessage(botToken, channelId, "Unauthorized.");
+    return;
+  }
+
+  switch (command) {
+    case "/start":
+      await sendMessage(
+        botToken,
+        channelId,
+        "Hello! DM me or @mention me in a channel and I'll respond using Claude.\nUse `/reset` to start a fresh session, `/status` to see session info, `/compact` to compact context.",
+      );
+      return;
+
+    case "/reset":
+      await resetSession();
+      await sendMessage(botToken, channelId, "Global session reset. Next message starts fresh.");
+      return;
+
+    case "/compact": {
+      await sendMessage(botToken, channelId, "⏳ Compacting session...");
+      const result = await compactCurrentSession();
+      await sendMessage(botToken, channelId, result.message);
+      return;
+    }
+
+    case "/status": {
+      const session = await peekSession();
+      const settings = getSettings();
+      if (!session) {
+        await sendMessage(botToken, channelId, "📊 No active session.");
+        return;
+      }
+      const lines = [
+        "*📊 Session Status*",
+        `Session: \`${session.sessionId.slice(0, 8)}\``,
+        `Turns: ${session.turnCount ?? 0}`,
+        `Model: ${settings.model || "default"}`,
+        `Security: ${settings.security.level}`,
+        `Created: ${session.createdAt}`,
+        `Last used: ${session.lastUsedAt}`,
+      ];
+      await sendMessage(botToken, channelId, lines.join("\n"));
+      return;
+    }
+
+    default:
+      await sendMessage(botToken, channelId, `Unknown command: \`${command}\``);
+  }
+}
+
 async function handleReaction(botToken: string, event: SlackEvent): Promise<void> {
   const config = getSettings().slack;
   const userId = event.user;
@@ -913,6 +981,20 @@ function connectSocketMode(botToken: string, appToken: string): void {
         } else if (slackEvent.type === "app_home_opened" && slackEvent.tab === "home") {
           handleAppHomeOpened(botToken, slackEvent.user).catch((err) =>
             console.error(`[Slack] app_home_opened error: ${err}`),
+          );
+        }
+      }
+
+      if (payload.type === "slash_commands" && payload.payload?.command) {
+        const cmd: SlackSlashCommand = {
+          command: payload.payload.command,
+          text: payload.payload.text ?? "",
+          channelId: payload.payload.channel_id ?? "",
+          userId: payload.payload.user_id ?? "",
+        };
+        if (cmd.channelId && cmd.userId) {
+          handleSlashCommand(botToken, cmd).catch((err) =>
+            console.error(`[Slack] Unhandled slash command error: ${err}`),
           );
         }
       }

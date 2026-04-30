@@ -112,8 +112,9 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Slack app token (`xapp-1-...`)
      - Allowed Slack user IDs (hint: in Slack, click your profile → More → Copy member ID. Format `U01ABC2DEF3`. Leave empty to allow all workspace members.)
      - Listen channel IDs (optional — hint: in Slack, click a channel name → bottom of the panel shows the channel ID. Format `C01ABC2DEF3`. Channels where the bot responds to all messages without requiring an @mention.)
-     - Set `slack.botToken`, `slack.appToken`, `slack.allowedUserIds` (as array of strings), and `slack.listenChannels` (as array of strings) accordingly.
-     - Note: Slack bot connects via Socket Mode (WebSocket) in-process with the daemon — no public webhook required. Supports DMs (continuous conversation, recommended), channel @mentions, and configurable listen channels. The "AI App" assistant surface (sidebar) with streaming responses is also supported but disabled by default in step 5 because it splits DMs across multiple threads. `slack.allowedUserIds` is an allowlist; empty means all workspace members can interact.
+     - Home channel ID (optional — channel ID where cron job and heartbeat output is posted. When set, replaces the default of DMing every `allowedUserIds`. Bot must be invited to the channel.)
+     - Set `slack.botToken`, `slack.appToken`, `slack.allowedUserIds` (as array of strings), `slack.listenChannels` (as array of strings), and `slack.homeChannel` (as string) accordingly.
+     - Note: Slack bot connects via Socket Mode (WebSocket) in-process with the daemon — no public webhook required. Supports DMs (continuous conversation, recommended), channel @mentions, configurable listen channels, slash commands (`/start`, `/reset`, `/compact`, `/status`), file attachments (image/voice/text), and reaction-driven follow-ups. The "AI App" assistant surface (sidebar) with streaming responses is also supported but disabled by default in step 5 because it splits DMs across multiple threads. `slack.allowedUserIds` is an allowlist; empty means all workspace members can interact.
 
    - **Security level mapping** — set `security.level` in settings based on their choice:
      - "Locked" → `"locked"`
@@ -235,7 +236,8 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
     "botToken": "xoxb-...",
     "appToken": "xapp-1-...",
     "allowedUserIds": ["U01ABC2DEF3"],
-    "listenChannels": ["C01ABC2DEF3"]
+    "listenChannels": ["C01ABC2DEF3"],
+    "homeChannel": "C01HOMEXYZ"
   },
   "security": {
     "level": "moderate",
@@ -265,6 +267,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 - `slack.appToken` — Slack App-Level Token (`xapp-1-...`) used to open the Socket Mode connection
 - `slack.allowedUserIds` — array of string Slack user IDs (e.g. `U01ABC2DEF3`) allowed to interact; empty means all workspace members
 - `slack.listenChannels` — array of string channel IDs (e.g. `C01ABC2DEF3`) where the bot responds to all messages without requiring an @mention
+- `slack.homeChannel` — optional channel ID for cron job + heartbeat output. When set, replaces DMing every `allowedUserIds`. Bot must be invited to the channel.
 - `security.level` — one of: `locked`, `strict`, `moderate`, `unrestricted`
 - `security.allowedTools` — extra tools to allow on top of the level (e.g. `["Bash(git:*)"]`)
 - `security.disallowedTools` — tools to block on top of the level
