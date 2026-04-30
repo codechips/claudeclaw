@@ -15,11 +15,12 @@
       "always_online": true
     },
     "slash_commands": [
-      { "command": "/start", "description": "Show welcome message and usage instructions", "should_escape": false },
-      { "command": "/reset", "description": "Reset the global session — next message starts fresh", "should_escape": false },
-      { "command": "/compact", "description": "Compact the current session to free context", "should_escape": false },
-      { "command": "/status", "description": "Show session info, model, and security level", "should_escape": false },
-      { "command": "/context", "description": "Show context window usage with a progress bar", "should_escape": false }
+      {
+        "command": "/cc",
+        "description": "ClaudeClaw control: start, reset, compact, status, context, help",
+        "usage_hint": "[start|reset|compact|status|context|help]",
+        "should_escape": false
+      }
     ]
   },
   "oauth_config": {

@@ -16,12 +16,12 @@ Show the Slack bot integration status. Check the following:
 
 4. **Running**: Check if the daemon is running by reading `.claude/claudeclaw/daemon.pid`. The Slack bot runs in-process with the daemon when `slack.botToken` and `slack.appToken` are both configured.
 
-5. **Slash commands** (declared in `docs/slack-app-manifest.json`):
-   - `/start` — show welcome message
-   - `/reset` — reset the global session (next message starts fresh)
-   - `/compact` — compact the current session to free context
-   - `/status` — show session info, model, and security level
-   - `/context` — show context window usage with a progress bar (use this to decide when to `/compact`)
-   These work in any DM or channel where the bot is present, subject to `allowedUserIds`. If you've added or changed slash commands and the user reports "command not found," tell them to reinstall the app from the Slack app manifest page.
+5. **Slash commands** — single `/cc` command (declared in `docs/slack-app-manifest.json`) takes a subcommand:
+   - `/cc help` (or `/cc start`, `/cc` with no args) — show welcome message
+   - `/cc reset` — reset the global session (next message starts fresh)
+   - `/cc compact` — compact the current session to free context
+   - `/cc status` — show session info, model, and security level
+   - `/cc context` — show context window usage with a progress bar (use this to decide when to `/cc compact`)
+   Works in any DM or channel where the bot is present, subject to `allowedUserIds`. The single `/cc` command is namespaced to avoid conflicts with Slack built-ins (`/status`, `/help`, `/dnd`, etc.). If the user reports "command not found," tell them to reinstall the app from the Slack app manifest page.
 
 Format the output clearly for the user.

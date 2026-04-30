@@ -800,37 +800,50 @@ async function handleMessage(botToken: string, event: SlackEvent): Promise<void>
   }
 }
 
+const SLASH_HELP =
+  "*ClaudeClaw* — `/cc <subcommand>`\n" +
+  "• `start` (or `help`) — show this welcome message\n" +
+  "• `reset` — reset the global session (next message starts fresh)\n" +
+  "• `compact` — compact the current session to free context\n" +
+  "• `status` — show session info, model, security level\n" +
+  "• `context` — show context window usage with a progress bar";
+
 async function handleSlashCommand(botToken: string, cmd: SlackSlashCommand): Promise<void> {
   const config = getSettings().slack;
-  const { command, channelId, userId } = cmd;
+  const { command, text, channelId, userId } = cmd;
 
   if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
     await sendMessage(botToken, channelId, "Unauthorized.");
     return;
   }
 
-  switch (command) {
-    case "/start":
-      await sendMessage(
-        botToken,
-        channelId,
-        "Hello! DM me or @mention me in a channel and I'll respond using Claude.\nUse `/reset` to start a fresh session, `/status` to see session info, `/compact` to compact context.",
-      );
+  if (command !== "/cc") {
+    await sendMessage(botToken, channelId, `Unknown command: \`${command}\`. Use \`/cc help\` for usage.`);
+    return;
+  }
+
+  const subcommand = (text.trim().split(/\s+/, 1)[0] ?? "").toLowerCase();
+
+  switch (subcommand) {
+    case "":
+    case "help":
+    case "start":
+      await sendMessage(botToken, channelId, SLASH_HELP);
       return;
 
-    case "/reset":
+    case "reset":
       await resetSession();
       await sendMessage(botToken, channelId, "Global session reset. Next message starts fresh.");
       return;
 
-    case "/compact": {
+    case "compact": {
       await sendMessage(botToken, channelId, "⏳ Compacting session...");
       const result = await compactCurrentSession();
       await sendMessage(botToken, channelId, result.message);
       return;
     }
 
-    case "/status": {
+    case "status": {
       const session = await peekSession();
       const settings = getSettings();
       if (!session) {
@@ -850,7 +863,7 @@ async function handleSlashCommand(botToken: string, cmd: SlackSlashCommand): Pro
       return;
     }
 
-    case "/context": {
+    case "context": {
       const session = await peekSession();
       if (!session) {
         await sendMessage(botToken, channelId, "No active session.");
@@ -884,7 +897,7 @@ async function handleSlashCommand(botToken: string, cmd: SlackSlashCommand): Pro
     }
 
     default:
-      await sendMessage(botToken, channelId, `Unknown command: \`${command}\``);
+      await sendMessage(botToken, channelId, `Unknown subcommand: \`${subcommand}\`. Use \`/cc help\` for usage.`);
   }
 }
 
