@@ -101,14 +101,11 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Set `discord.listenChannels` (as array of strings) accordingly.
      - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments. `discord.allowedUserIds` is an allowlist that applies to messages, slash commands, and button interactions.
 
-   - **If yes to Slack**: Do NOT use AskUserQuestion for Slack fields. First, walk the user through creating a Slack app:
-     1. Go to https://api.slack.com/apps → **Create New App** → **From scratch**. Name it and pick a workspace.
-     2. **Socket Mode** → toggle on. Generate an **App-Level Token** with scope `connections:write`. Copy the `xapp-1-...` value — this is the **app token**.
-     3. **OAuth & Permissions** → add Bot Token Scopes: `app_mentions:read`, `assistant:write`, `channels:history`, `chat:write`, `chat:write.public`, `groups:history`, `im:history`, `im:read`, `im:write`, `mpim:history`, `users:read`.
-     4. **App Home** → enable the **Messages Tab** and check "Allow users to send Slash commands and messages from the messages tab".
-     5. **Agents & AI Apps** → leave **disabled**. Enabling it routes DMs into the AI Assistant sidebar where each "New Chat" splits the conversation into a separate thread (fragmented Chat / History tabs), which breaks the continuous-DM experience most users expect. Only enable this if you specifically want the streaming-response sidebar UI and are willing to manage threads manually.
-     6. **Event Subscriptions** → toggle on, subscribe to bot events: `message.im`, `message.channels`, `message.groups`, `message.mpim`, `app_mention`, `app_home_opened`. Only add `assistant_thread_started` and `assistant_thread_context_changed` if you intentionally enabled Agents & AI Apps in step 5.
-     7. **Install App** to your workspace → copy the **Bot User OAuth Token** (`xoxb-...`) — this is the **bot token**.
+   - **If yes to Slack**: Do NOT use AskUserQuestion for Slack fields. First, walk the user through creating a Slack app via app manifest (one paste replaces clicking through OAuth, Event Subscriptions, App Home, and Socket Mode):
+     1. Go to https://api.slack.com/apps → **Create New App** → **From a manifest** → pick the target workspace → choose **YAML**.
+     2. Open `${CLAUDE_PLUGIN_ROOT}/docs/slack-app-manifest.yaml`, copy its contents into the manifest box, click **Next** → **Create**. (The manifest leaves Agents & AI Apps disabled by default — see the comment block in the file if you want to opt in.)
+     3. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes** → add scope `connections:write` → **Generate**. Copy the `xapp-1-...` value — this is the **app token**.
+     4. **Install App** → **Install to Workspace** → **Allow**. Copy the **Bot User OAuth Token** (`xoxb-...`) — this is the **bot token**.
 
      Then ask in normal free-form text for these values (all optional, user can skip):
      - Slack bot token (`xoxb-...`)

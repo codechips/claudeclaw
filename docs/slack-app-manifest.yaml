@@ -1,0 +1,49 @@
+display_information:
+  name: ClaudeClaw
+  description: Your Claude Code daemon, available in Slack via Socket Mode.
+  background_color: "#0a0a0a"
+features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: ClaudeClaw
+    always_online: true
+  # Agents & AI Apps (assistant_view) is intentionally omitted by default.
+  # Enabling it routes DMs into the AI Assistant sidebar where each "New Chat"
+  # splits the conversation into a separate thread (fragmented Chat / History
+  # tabs), which breaks the continuous-DM experience most users expect.
+  # Opt in by uncommenting and re-running "Update from manifest", then add
+  # `assistant_thread_started` and `assistant_thread_context_changed` to
+  # bot_events below.
+  # assistant_view:
+  #   assistant_description: ClaudeClaw — your Claude Code daemon, in the sidebar.
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - channels:history
+      - chat:write
+      - chat:write.public
+      - groups:history
+      - im:history
+      - im:read
+      - im:write
+      - mpim:history
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_home_opened
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+      # Add only if you also enable assistant_view above:
+      # - assistant_thread_context_changed
+      # - assistant_thread_started
+  socket_mode_enabled: true
+  token_rotation_enabled: false
