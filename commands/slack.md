@@ -21,6 +21,7 @@ Show the Slack bot integration status. Check the following:
    - `/reset` — reset the global session (next message starts fresh)
    - `/compact` — compact the current session to free context
    - `/status` — show session info, model, and security level
+   - `/context` — show context window usage with a progress bar (use this to decide when to `/compact`)
    These work in any DM or channel where the bot is present, subject to `allowedUserIds`. If you've added or changed slash commands and the user reports "command not found," tell them to reinstall the app from the Slack app manifest page.
 
 Format the output clearly for the user.

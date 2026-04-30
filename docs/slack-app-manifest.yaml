@@ -23,6 +23,9 @@ features:
     - command: /status
       description: Show session info, model, and security level
       should_escape: false
+    - command: /context
+      description: Show context window usage with a progress bar
+      should_escape: false
   # Agents & AI Apps (assistant_view) is intentionally omitted by default.
   # Enabling it routes DMs into the AI Assistant sidebar where each "New Chat"
   # splits the conversation into a separate thread (fragmented Chat / History

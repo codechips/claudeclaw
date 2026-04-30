@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { extractReactionDirective } from "../reactions";
+import { buildProgressBar, readContextUsage } from "../contextUsage";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
@@ -274,12 +275,6 @@ function extensionFromAudioMimeType(mimeType?: string): string {
     default:
       return "";
   }
-}
-
-function buildProgressBar(current: number, max: number, width: number = 20): string {
-  const ratio = Math.min(current / max, 1);
-  const filled = Math.round(ratio * width);
-  return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
 function extractTelegramCommand(text: string): string | null {
@@ -649,45 +644,23 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       await sendMessage(config.token, chatId, "No active session.", threadId);
       return;
     }
-    const home = homedir();
-    const projectSlug = process.cwd().replace(/\//g, "-");
-    const jsonlPath = `${home}/.claude/projects/${projectSlug}/${session.sessionId}.jsonl`;
-    if (!existsSync(jsonlPath)) {
-      await sendMessage(config.token, chatId, "Conversation file not found.", threadId);
-      return;
-    }
     try {
-      const raw = await readFile(jsonlPath, "utf8");
-      const fileLines = raw.trim().split("\n");
-      let lastUsage: any = null;
-      let totalOutput = 0;
-      for (const line of fileLines) {
-        try {
-          const obj = JSON.parse(line);
-          if (obj.message?.usage) lastUsage = obj.message.usage;
-          if (obj.message?.usage?.output_tokens) totalOutput += obj.message.usage.output_tokens;
-        } catch {}
-      }
-      if (!lastUsage) {
+      const usage = await readContextUsage(session.sessionId);
+      if (!usage) {
         await sendMessage(config.token, chatId, "No usage data found.", threadId);
         return;
       }
-      const input = lastUsage.input_tokens ?? 0;
-      const cacheCreation = lastUsage.cache_creation_input_tokens ?? 0;
-      const cacheRead = lastUsage.cache_read_input_tokens ?? 0;
-      const totalContext = input + cacheCreation + cacheRead;
-      const maxContext = 200000;
-      const pct = ((totalContext / maxContext) * 100).toFixed(1);
-      const bar = buildProgressBar(totalContext, maxContext);
+      const pct = ((usage.totalContextTokens / usage.maxContext) * 100).toFixed(1);
+      const bar = buildProgressBar(usage.totalContextTokens, usage.maxContext);
       const msg = [
         `📐 **Context Window**`,
         `${bar} ${pct}%`,
         ``,
-        `Total: \`${totalContext.toLocaleString()}\` / \`${maxContext.toLocaleString()}\` tokens`,
-        `├ Input: \`${input.toLocaleString()}\``,
-        `├ Cache creation: \`${cacheCreation.toLocaleString()}\``,
-        `├ Cache read: \`${cacheRead.toLocaleString()}\``,
-        `└ Output (cumulative): \`${totalOutput.toLocaleString()}\``,
+        `Total: \`${usage.totalContextTokens.toLocaleString()}\` / \`${usage.maxContext.toLocaleString()}\` tokens`,
+        `├ Input: \`${usage.inputTokens.toLocaleString()}\``,
+        `├ Cache creation: \`${usage.cacheCreationTokens.toLocaleString()}\``,
+        `├ Cache read: \`${usage.cacheReadTokens.toLocaleString()}\``,
+        `└ Output (cumulative): \`${usage.outputTokensCumulative.toLocaleString()}\``,
         ``,
         `Turns: ${session.turnCount ?? 0}`,
       ];

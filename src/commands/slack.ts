@@ -5,6 +5,7 @@ import { peekSession, resetSession } from "../sessions";
 import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
 import { extractReactionDirective } from "../reactions";
+import { buildProgressBar, readContextUsage } from "../contextUsage";
 import type { StateData } from "../statusline";
 
 // --- Slack API constants ---
@@ -846,6 +847,39 @@ async function handleSlashCommand(botToken: string, cmd: SlackSlashCommand): Pro
         `Last used: ${session.lastUsedAt}`,
       ];
       await sendMessage(botToken, channelId, lines.join("\n"));
+      return;
+    }
+
+    case "/context": {
+      const session = await peekSession();
+      if (!session) {
+        await sendMessage(botToken, channelId, "No active session.");
+        return;
+      }
+      try {
+        const usage = await readContextUsage(session.sessionId);
+        if (!usage) {
+          await sendMessage(botToken, channelId, "No usage data found.");
+          return;
+        }
+        const pct = ((usage.totalContextTokens / usage.maxContext) * 100).toFixed(1);
+        const bar = buildProgressBar(usage.totalContextTokens, usage.maxContext);
+        const msg = [
+          "*📐 Context Window*",
+          `${bar} ${pct}%`,
+          ``,
+          `Total: \`${usage.totalContextTokens.toLocaleString()}\` / \`${usage.maxContext.toLocaleString()}\` tokens`,
+          `├ Input: \`${usage.inputTokens.toLocaleString()}\``,
+          `├ Cache creation: \`${usage.cacheCreationTokens.toLocaleString()}\``,
+          `├ Cache read: \`${usage.cacheReadTokens.toLocaleString()}\``,
+          `└ Output (cumulative): \`${usage.outputTokensCumulative.toLocaleString()}\``,
+          ``,
+          `Turns: ${session.turnCount ?? 0}`,
+        ];
+        await sendMessage(botToken, channelId, msg.join("\n"));
+      } catch (err) {
+        await sendMessage(botToken, channelId, `Failed to read context: ${err instanceof Error ? err.message : err}`);
+      }
       return;
     }
 
