@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
+import { extractReactionDirective } from "../reactions";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
@@ -218,22 +219,6 @@ async function sendReaction(
       headers: { Authorization: `Bot ${token}` },
     },
   ).catch(() => {});
-}
-
-// --- Reaction directive extraction (same as telegram.ts) ---
-
-function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
-  let reactionEmoji: string | null = null;
-  const cleanedText = text
-    .replace(/\[react:([^\]\r\n]+)\]/gi, (_match, raw) => {
-      const candidate = String(raw).trim();
-      if (!reactionEmoji && candidate) reactionEmoji = candidate;
-      return "";
-    })
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return { cleanedText, reactionEmoji };
 }
 
 // --- Thread rejoin helper ---
