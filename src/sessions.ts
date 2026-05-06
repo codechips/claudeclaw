@@ -1,5 +1,5 @@
-import { join } from "path";
-import { unlink, readdir, rename } from "fs/promises";
+import { dirname, join } from "path";
+import { unlink, readdir, rename, mkdir } from "fs/promises";
 import { getAgentsDir } from "./config";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
@@ -11,6 +11,7 @@ export interface GlobalSession {
   lastUsedAt: string;
   turnCount: number;
   compactWarned: boolean;
+  messageCount?: number;
 }
 
 // Module-level cache is for the GLOBAL session only.
@@ -86,6 +87,14 @@ export async function incrementTurn(agentName?: string): Promise<number> {
   return existing.turnCount;
 }
 
+/** Increment the message counter for rotation tracking. Call once per actual Claude invocation, not on reads. */
+export async function incrementMessageCount(agentName?: string): Promise<void> {
+  const existing = await loadSession(agentName);
+  if (!existing) return;
+  existing.messageCount = (existing.messageCount ?? 0) + 1;
+  await saveSession(existing, agentName);
+}
+
 /** Mark that the compact warning has been sent for the current session. */
 export async function markCompactWarned(agentName?: string): Promise<void> {
   const existing = await loadSession(agentName);
@@ -98,6 +107,73 @@ export async function resetSession(agentName?: string): Promise<void> {
   if (!agentName) current = null;
   try {
     await unlink(sessionPathFor(agentName));
+  } catch {
+    // already gone
+  }
+}
+
+// --- Fallback session management ---
+// Fallback sessions are stored alongside primary sessions but keyed separately.
+// They persist across rate-limit events so the fallback provider accumulates context.
+
+const FALLBACK_SESSION_FILE = join(HEARTBEAT_DIR, "session_fallback.json");
+
+function fallbackSessionPathFor(agentName?: string, threadId?: string): string {
+  if (threadId) return join(HEARTBEAT_DIR, "fallback-sessions", `${encodeURIComponent(threadId)}.json`);
+  if (agentName) return join(getAgentsDir(), agentName, "session_fallback.json");
+  return FALLBACK_SESSION_FILE;
+}
+
+async function loadFallbackSession(agentName?: string, threadId?: string): Promise<GlobalSession | null> {
+  try {
+    return await Bun.file(fallbackSessionPathFor(agentName, threadId)).json();
+  } catch {
+    return null;
+  }
+}
+
+async function saveFallbackSession(session: GlobalSession, agentName?: string, threadId?: string): Promise<void> {
+  const path = fallbackSessionPathFor(agentName, threadId);
+  await mkdir(dirname(path), { recursive: true });
+  await Bun.write(path, JSON.stringify(session, null, 2) + "\n");
+}
+
+export async function getFallbackSession(
+  agentName?: string,
+  threadId?: string
+): Promise<{ sessionId: string; turnCount: number } | null> {
+  const existing = await loadFallbackSession(agentName, threadId);
+  if (existing) {
+    if (typeof existing.turnCount !== "number") existing.turnCount = 0;
+    existing.lastUsedAt = new Date().toISOString();
+    await saveFallbackSession(existing, agentName, threadId);
+    return { sessionId: existing.sessionId, turnCount: existing.turnCount };
+  }
+  return null;
+}
+
+export async function createFallbackSession(sessionId: string, agentName?: string, threadId?: string): Promise<void> {
+  await saveFallbackSession({
+    sessionId,
+    createdAt: new Date().toISOString(),
+    lastUsedAt: new Date().toISOString(),
+    turnCount: 0,
+    compactWarned: false,
+  }, agentName, threadId);
+}
+
+export async function incrementFallbackTurn(agentName?: string, threadId?: string): Promise<number> {
+  const existing = await loadFallbackSession(agentName, threadId);
+  if (!existing) return 0;
+  if (typeof existing.turnCount !== "number") existing.turnCount = 0;
+  existing.turnCount += 1;
+  await saveFallbackSession(existing, agentName, threadId);
+  return existing.turnCount;
+}
+
+export async function resetFallbackSession(agentName?: string, threadId?: string): Promise<void> {
+  try {
+    await unlink(fallbackSessionPathFor(agentName, threadId));
   } catch {
     // already gone
   }

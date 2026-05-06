@@ -3,6 +3,7 @@ import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import { normalizeTimezoneName, resolveTimezoneOffsetMinutes } from "./timezone";
 import { parseWatchdogConfig, type WatchdogConfig } from "./watchdog";
+import { parsePlugins, type PluginEntry } from "./plugins";
 
 /** Re-exported under the name used in the Settings interface. */
 export type WatchdogSettings = WatchdogConfig;
@@ -14,6 +15,8 @@ const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
 
 /** Default Claude session timeout (30 minutes). Exported so runner.ts can reference the same value. */
 export const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+
+export const DEFAULT_IMAGE_OUTPUT_ROOT = join(HEARTBEAT_DIR, "outbox", "discord");
 
 export function getJobsDir(): string {
   if (cached?.jobsDir) {
@@ -75,13 +78,17 @@ const DEFAULT_SETTINGS: Settings = {
     excludeWindows: [],
     forwardToTelegram: true,
   },
-  telegram: { token: "", allowedUserIds: [], listenChats: [] },
-  discord: { token: "", allowedUserIds: [], listenChannels: [] },
+  telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true, dmIsolation: "shared" },
+  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [] },
+  slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
   sessionTimeoutMs: DEFAULT_SESSION_TIMEOUT_MS,
+  timeouts: { telegram: 5, heartbeat: 15, job: 30, default: 5 },
   watchdog: { maxConsecutiveTimeouts: null, maxRuntimeSeconds: null },
+  session: { autoRotate: false, maxMessages: 50, maxAgeHours: 24, summaryPath: "" },
+  plugins: {},
 };
 
 export interface HeartbeatExcludeWindow {
@@ -102,12 +109,30 @@ export interface TelegramConfig {
   token: string;
   allowedUserIds: number[];
   listenChats: number[];
+  /** When false, skip Telegram polling (incoming messages). Useful for send-only instances. Default: true */
+  receiveEnabled: boolean;
+  /**
+   * Controls session isolation for Telegram DMs.
+   * - "shared": all DMs share the global session (matches Discord DM behaviour). Default.
+   * - "perUser": each DM user gets their own isolated session.
+   */
+  dmIsolation: "shared" | "perUser";
 }
 
 export interface DiscordConfig {
   token: string;
   allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
   listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
+  listenGuilds: string[]; // Guild IDs where bot responds to all messages in any channel/thread
+  channelNames?: Record<string, string>; // channelId -> friendly name for system prompt context
+  imageOutputRoots: string[]; // Absolute path prefixes from which image uploads are permitted
+}
+
+export interface SlackConfig {
+  botToken: string;       // xoxb-... bot token
+  appToken: string;       // xapp-... Socket Mode token
+  allowedUserIds: string[];
+  listenChannels: string[]; // Channel IDs where bot responds without @mention
 }
 
 export type SecurityLevel =
@@ -122,6 +147,17 @@ export interface SecurityConfig {
   disallowedTools: string[];
 }
 
+export interface TimeoutsConfig {
+  /** Max minutes for a telegram message subprocess. Default: 5 min. */
+  telegram: number;
+  /** Max minutes for a heartbeat subprocess. Default: 15 min. */
+  heartbeat: number;
+  /** Max minutes for a scheduled job subprocess. Default: 30 min. */
+  job: number;
+  /** Max minutes for all other subprocesses (bootstrap, trigger, etc). Default: 5 min. */
+  default: number;
+}
+
 export interface Settings {
   model: string;
   api: string;
@@ -132,11 +168,16 @@ export interface Settings {
   heartbeat: HeartbeatConfig;
   telegram: TelegramConfig;
   discord: DiscordConfig;
+  slack: SlackConfig;
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  apiToken?: string;
   sessionTimeoutMs: number;
+  timeouts: TimeoutsConfig;
   watchdog: WatchdogSettings;
+  plugins: Record<string, PluginEntry>;
+  session: SessionConfig;
   jobsDir?: string;
 }
 
@@ -172,6 +213,21 @@ export interface SttConfig {
   baseUrl: string;
   /** Model name passed to the API (default: "Systran/faster-whisper-large-v3") */
   model: string;
+  /** MCP tool name or CLI command to delegate transcription to (e.g. "mcp__whisper__transcribe"
+   *  or "whisper"). When set, whisper is skipped and Claude is asked to call this tool directly
+   *  with the audio file path. When unset (default), whisper handles transcription. */
+  delegateTool?: string;
+}
+
+export interface SessionConfig {
+  /** Automatically rotate the global session when a threshold is exceeded. Default: false. */
+  autoRotate: boolean;
+  /** Rotate after this many messages. Default: 50. */
+  maxMessages: number;
+  /** Rotate after this many hours. Default: 24. */
+  maxAgeHours: number;
+  /** Directory to write markdown summaries before rotation. Empty string disables summaries. */
+  summaryPath: string;
 }
 
 let cached: Settings | null = null;
@@ -276,6 +332,8 @@ function parseSettings(
       token: process.env.TELEGRAM_TOKEN?.trim() || (typeof raw.telegram?.token === "string" ? raw.telegram.token.trim() : ""),
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
       listenChats: Array.isArray(raw.telegram?.listenChats) ? raw.telegram.listenChats.map(Number) : [],
+      receiveEnabled: raw.telegram?.receiveEnabled !== false,
+      dmIsolation: raw.telegram?.dmIsolation === "perUser" ? "perUser" : "shared",
     },
     discord: {
       token: process.env.DISCORD_TOKEN?.trim() || (typeof raw.discord?.token === "string" ? raw.discord.token.trim() : ""),
@@ -287,6 +345,23 @@ function parseSettings(
       listenChannels: Array.isArray(raw.discord?.listenChannels)
         ? raw.discord.listenChannels.map(String)
         : [],
+      listenGuilds: Array.isArray(raw.discord?.listenGuilds)
+        ? raw.discord.listenGuilds.map(String)
+        : [],
+      channelNames: raw.discord?.channelNames && typeof raw.discord.channelNames === "object"
+        ? Object.fromEntries(
+            Object.entries(raw.discord.channelNames as Record<string, unknown>).map(([k, v]) => [String(k), String(v)]),
+          )
+        : undefined,
+      imageOutputRoots: Array.isArray(raw.discord?.imageOutputRoots)
+        ? raw.discord.imageOutputRoots.filter((r: unknown) => typeof r === "string" && isAbsolute(r))
+        : [],
+    },
+    slack: {
+      botToken: process.env.SLACK_BOT_TOKEN?.trim() || (typeof raw.slack?.botToken === "string" ? raw.slack.botToken.trim() : ""),
+      appToken: process.env.SLACK_APP_TOKEN?.trim() || (typeof raw.slack?.appToken === "string" ? raw.slack.appToken.trim() : ""),
+      allowedUserIds: Array.isArray(raw.slack?.allowedUserIds) ? raw.slack.allowedUserIds.map(String) : [],
+      listenChannels: Array.isArray(raw.slack?.listenChannels) ? raw.slack.listenChannels.map(String) : [],
     },
     security: {
       level,
@@ -305,11 +380,28 @@ function parseSettings(
     stt: {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
+      ...(typeof raw.stt?.delegateTool === "string" && raw.stt.delegateTool.trim()
+        ? { delegateTool: raw.stt.delegateTool.trim() }
+        : {}),
     },
     sessionTimeoutMs: typeof raw.sessionTimeoutMs === "number" && raw.sessionTimeoutMs > 0
       ? raw.sessionTimeoutMs
       : DEFAULT_SESSION_TIMEOUT_MS,
+    timeouts: {
+      telegram: Number.isFinite(raw.timeouts?.telegram) && Number(raw.timeouts.telegram) > 0 ? Number(raw.timeouts.telegram) : 5,
+      heartbeat: Number.isFinite(raw.timeouts?.heartbeat) && Number(raw.timeouts.heartbeat) > 0 ? Number(raw.timeouts.heartbeat) : 15,
+      job: Number.isFinite(raw.timeouts?.job) && Number(raw.timeouts.job) > 0 ? Number(raw.timeouts.job) : 30,
+      default: Number.isFinite(raw.timeouts?.default) && Number(raw.timeouts.default) > 0 ? Number(raw.timeouts.default) : 5,
+    },
     watchdog: parseWatchdogConfig(raw.watchdog),
+    plugins: parsePlugins(raw.plugins),
+    session: {
+      autoRotate: raw.session?.autoRotate ?? false,
+      maxMessages: Number.isFinite(raw.session?.maxMessages) ? Number(raw.session.maxMessages) : 50,
+      maxAgeHours: Number.isFinite(raw.session?.maxAgeHours) ? Number(raw.session.maxAgeHours) : 24,
+      summaryPath: typeof raw.session?.summaryPath === "string" ? raw.session.summaryPath.trim() : "",
+    },
+    apiToken: typeof raw.apiToken === "string" && raw.apiToken.trim() ? raw.apiToken.trim() : undefined,
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
   };
 }
